@@ -1,0 +1,393 @@
+#!/bin/bash
+# Pretty LLM DNS Query with GUI-like interface by @Xyborg
+# Author: Martin Aberastegue - https://www.martinaberastegue.com
+# https://github.com/Xyborg/Pretty-Ask-UI
+# Usage: ./pretty-ask-ui [question]
+
+# ===== SERVER CONFIGURATION =====
+# Easy to modify: just add/remove entries here
+# Format: "Name|Host|Port"
+SERVERS=(
+    "ch.at|ch.at|53"
+    "LLM Pieter|llm.pieter.com|9000"
+    "Local|localhost|5354"
+    # Add more servers here like:
+    # "OpenAI Proxy|proxy.example.com|1234"
+    # "Custom DNS|my-server.com|8080"
+)
+
+# Selected server (will be set by user choice)
+SELECTED_SERVER=""
+SERVER=""
+PORT=""
+
+# Colors for better output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;37m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# Box drawing
+BOX_H="─"
+BOX_V="│"
+BOX_TL="┌"
+BOX_TR="┐"
+BOX_BL="└"
+BOX_BR="┘"
+
+# Get terminal width
+COLS=$(tput cols 2>/dev/null || echo 80)
+
+# DNS query limits
+MAX_LABEL_LENGTH=63
+MAX_TOTAL_LENGTH=253
+
+# Helper functions to get server info (bash 3.2 compatible)
+get_server_count() {
+    echo ${#SERVERS[@]}
+}
+
+get_server_info() {
+    local index="$1"
+    local field="$2"  # name, host, or port
+    local server_entry="${SERVERS[$((index-1))]}"
+    
+    case "$field" in
+        name) echo "$server_entry" | cut -d'|' -f1 ;;
+        host) echo "$server_entry" | cut -d'|' -f2 ;;
+        port) echo "$server_entry" | cut -d'|' -f3 ;;
+    esac
+}
+
+get_server_name() {
+    get_server_info "$1" "name"
+}
+
+get_server_host() {
+    get_server_info "$1" "host"
+}
+
+get_server_port() {
+    get_server_info "$1" "port"
+}
+
+# Function to check query length and show warnings
+check_query_length() {
+    local query="$1"
+    local length=${#query}
+    
+    if [ $length -gt $MAX_TOTAL_LENGTH ]; then
+        echo -e "${RED}⚠️  Query too long (${length}/${MAX_TOTAL_LENGTH} chars). DNS queries are limited to $MAX_TOTAL_LENGTH characters.${NC}"
+        return 1
+    elif [ $length -gt $MAX_LABEL_LENGTH ]; then
+        echo -e "${YELLOW}⚠️  Long query (${length}/${MAX_TOTAL_LENGTH} chars). May cause issues with some DNS servers.${NC}"
+        return 0
+    fi
+    return 0
+}
+
+# Function to show character count with color coding
+show_char_count() {
+    local query="$1"
+    local length=${#query}
+    local color=""
+    
+    if [ $length -gt $MAX_TOTAL_LENGTH ]; then
+        color="$RED"
+    elif [ $length -gt $MAX_LABEL_LENGTH ]; then
+        color="$YELLOW"
+    else
+        color="$DIM"
+    fi
+    
+    echo -e "${color}[${length}/${MAX_TOTAL_LENGTH}]${NC}"
+}
+
+# Function to read input with strict length validation
+read_with_limit() {
+    local prompt="$1"
+    local input=""
+    
+    while true; do
+        echo -ne "$prompt ${DIM}(max ${MAX_LABEL_LENGTH} chars)${NC} ${WHITE}" >&2
+        read -r input
+        echo -e "${NC}" >&2
+        
+        # Trim whitespace
+        input=$(echo "$input" | xargs)
+        
+        # Check if empty (allow empty for commands)
+        if [ -z "$input" ]; then
+            echo "$input"
+            return
+        fi
+        
+        local length=${#input}
+        
+        # Strict validation - block anything over 63 chars
+        if [ $length -gt $MAX_LABEL_LENGTH ]; then
+            echo -e "${RED}❌ Too long! (${length}/${MAX_LABEL_LENGTH} chars)${NC}" >&2
+            echo -e "${YELLOW}💡 DNS labels are limited to ${MAX_LABEL_LENGTH} characters. Please try a shorter question.${NC}" >&2
+            echo "" >&2
+            continue  # Ask again
+        else
+            # Show success with character count
+            local color=""
+            if [ $length -gt 40 ]; then
+                color="$YELLOW"
+            else
+                color="$GREEN"
+            fi
+            #echo -e "${color}✓ (${length}/${MAX_LABEL_LENGTH} chars)${NC}" >&2
+        fi
+        
+        echo "$input"
+        return
+    done
+}
+
+# Function to show server selection menu
+show_server_menu() {
+    echo ""
+    echo -e "${BLUE}${BOX_TL}$(draw_line $((COLS-2)))${BOX_TR}${NC}"
+    echo -e "${BLUE}${BOX_V}${WHITE}$(center_text "🌐 Choose Your LLM Server" $((COLS-2)))${BLUE}${BOX_V}${NC}"
+    echo -e "${BLUE}${BOX_BL}$(draw_line $((COLS-2)))${BOX_BR}${NC}"
+    echo ""
+    echo -e "${CYAN}Available servers:${NC}"
+    local server_count=$(get_server_count)
+    local i
+    for i in $(seq 1 $server_count); do
+        local name=$(get_server_name $i)
+        local host=$(get_server_host $i)
+        local port=$(get_server_port $i)
+        
+        if [ "$port" = "53" ]; then
+            echo -e "${WHITE}[$i]${NC} $name ($host)"
+        else
+            echo -e "${WHITE}[$i]${NC} $name ($host:$port)"
+        fi
+    done
+    echo ""
+}
+
+# Function to select server
+select_server() {
+    local server_count=$(get_server_count)
+    
+    while true; do
+        show_server_menu
+        echo -ne "${CYAN}Choose server [1-$server_count]:${NC} ${WHITE}"
+        read -r choice
+        echo -e "${NC}"
+        
+        # Validate input is a number and within range
+        if echo "$choice" | grep -q '^[0-9]\+$' && [ "$choice" -ge 1 ] && [ "$choice" -le "$server_count" ]; then
+            SELECTED_SERVER="$choice"
+            SERVER="$(get_server_host $choice)"
+            PORT="$(get_server_port $choice)"
+            echo -e "${GREEN}✓ Selected: $(get_server_name $choice) (${SERVER}:${PORT})${NC}"
+            echo ""
+            return 0
+        else
+            echo -e "${RED}❌ Please choose a number between 1 and $server_count${NC}"
+            echo ""
+        fi
+    done
+}
+
+# Function to draw a line
+draw_line() {
+    local width="$1"
+    printf "%*s" "$width" "" | tr ' ' "$BOX_H"
+}
+
+# Function to center text
+center_text() {
+    local text="$1"
+    local width="$2"
+    local text_len=${#text}
+    local padding=$(( (width - text_len) / 2 ))
+    printf "%*s%s%*s" "$padding" "" "$text" "$((width - text_len - padding))" ""
+}
+
+# Function to draw header box
+draw_header() {
+    local server_info=""
+    if [ -n "$SELECTED_SERVER" ]; then
+        server_info=" via $(get_server_name $SELECTED_SERVER)"
+    fi
+    echo -e "${BLUE}${BOX_TL}$(draw_line $((COLS-2)))${BOX_TR}${NC}"
+    echo -e "${BLUE}${BOX_V}${WHITE}$(center_text "🧠 LLM DNS Query Interface$server_info" $((COLS-2)))${BLUE}${BOX_V}${NC}"
+    echo -e "${BLUE}${BOX_BL}$(draw_line $((COLS-2)))${BOX_BR}${NC}"
+}
+
+# Function to show user message
+show_user_message() {
+    local question="$1"
+    echo ""
+    echo -e "${CYAN}👤 You:${NC} ${WHITE}$question${NC}"
+}
+
+# Function to show AI response (clean chat style)
+show_ai_response() {
+    local response="$1"
+    echo -e "${GREEN}🤖 AI:${NC}"
+    
+    # Format response - clean and simple
+    echo "$response" | \
+        sed 's/^"//; s/"$//' | \
+        sed 's/\\010/\n/g' | \
+        sed 's/\\\"/"/g' | \
+        sed 's/^\[.*\] //' | \
+        sed 's/\\195\\179/ó/g; s/\\195\\161/á/g; s/\\195\\169/é/g; s/\\195\\173/í/g; s/\\195\\186/ú/g; s/\\195\\177/ñ/g; s/\\194\\191/¿/g; s/\\194\\161/¡/g' | \
+        fold -w $((COLS-4)) -s | \
+        sed 's/^/  /'
+}
+
+# Function to query LLM (clean chat style)
+query_llm() {
+    local question="$1"
+    
+    # Show brief loading (no box)
+    echo -ne "${GREEN}🤖 AI: ${DIM}thinking...${NC}"
+    
+    # Execute query
+    local response=$(dig @$SERVER -p $PORT "$question" TXT +short 2>&1)
+    
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo -e "\r${RED}🤖 AI: ❌ Sorry, I couldn't connect to the server.${NC}"
+        return 1
+    fi
+    
+    # Clear loading and show response
+    echo -e "\r$(printf "%*s" 50 "")\r"  # Clear the thinking line
+    show_ai_response "$response"
+    
+    return 0
+}
+
+# Main function
+main() {
+    # First, clear screen and show server selection
+    clear
+    select_server
+    
+    # Test connection to selected server
+    echo "Testing connection to $SERVER:$PORT..." >&2
+    if ! dig @$SERVER -p $PORT "test" TXT +short >/dev/null 2>&1; then
+        echo -e "${RED}❌ Cannot connect to $(get_server_name $SELECTED_SERVER) at $SERVER:$PORT${NC}"
+        if [ "$(get_server_name $SELECTED_SERVER)" = "Local" ]; then
+            echo -e "${YELLOW}Please make sure the local server is running: python3 llm_dns_server.py${NC}"
+        else
+            echo -e "${YELLOW}The $(get_server_name $SELECTED_SERVER) server might be down or unreachable${NC}"
+        fi
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Connected to $(get_server_name $SELECTED_SERVER)${NC}" >&2
+
+    # Check if question is provided as argument - single query mode
+    if [ $# -gt 0 ]; then
+        question="$*"
+        clear
+        draw_header
+        show_user_message "$question"
+        query_llm "$question"
+        echo ""
+        echo -e "${GRAY}─────────────────────────────────────────${NC}"
+        echo -e "${DIM}LLM DNS Chat | Press Ctrl+C to exit${NC}"
+        return
+    fi
+
+    # Interactive mode - continuous chat
+    local first_run=true
+    
+    while true; do
+        if [ "$first_run" = true ]; then
+            clear
+            draw_header
+            echo ""
+            echo -e "${DIM}💬 Chat Mode - Type your questions naturally${NC}"
+            echo -e "${CYAN}💡 Commands: ${WHITE}help${CYAN}, ${WHITE}switch${CYAN}, ${WHITE}clear${CYAN}, ${WHITE}q${CYAN} (quit)${NC}"
+            echo -e "${DIM}Current server: ${WHITE}$(get_server_name $SELECTED_SERVER)${DIM} (${SERVER}:${PORT})${NC}"
+            echo -e "${DIM}📝 Keep queries under ${MAX_LABEL_LENGTH} characters for best DNS compatibility${NC}"
+            first_run=false
+        fi
+        
+        echo ""
+        question=$(read_with_limit "${CYAN}👤 You:${NC}")
+        
+        # Check if empty input (commands or empty)
+        if [ -z "$question" ]; then
+            echo -e "${YELLOW}💡 Please ask a question or type 'help' for commands${NC}"
+            continue
+        fi
+        
+        # Handle special commands
+        case "$question" in
+            "help"|"h")
+                echo -e "${GREEN}🤖 AI:${NC}"
+                echo "  Available commands:"
+                echo "  • help, h - Show this help"
+                echo "  • switch, s - Change server"
+                echo "  • clear, cls - Clear chat history"
+                echo "  • quit, exit, q, :q - Exit the chat"
+                echo ""
+                echo "  Examples:"
+                echo "  • what is golang"
+                echo "  • write hello world in python"
+                echo "  • explain machine learning"
+                ;;
+            "switch"|"s")
+                echo ""
+                echo -e "${YELLOW}🔄 Switching server...${NC}"
+                echo ""
+                select_server
+                
+                # Test connection to new server
+                echo "Testing connection to $SERVER:$PORT..." >&2
+                if ! dig @$SERVER -p $PORT "test" TXT +short >/dev/null 2>&1; then
+                    echo -e "${RED}❌ Cannot connect to $(get_server_name $SELECTED_SERVER) at $SERVER:$PORT${NC}"
+                    if [ "$(get_server_name $SELECTED_SERVER)" = "Local" ]; then
+                        echo -e "${YELLOW}Please make sure the local server is running: python3 llm_dns_server.py${NC}"
+                    else
+                        echo -e "${YELLOW}The $(get_server_name $SELECTED_SERVER) server might be down or unreachable${NC}"
+                    fi
+                    echo -e "${YELLOW}💡 You can try switching to another server with 'switch'${NC}"
+                else
+                    echo -e "${GREEN}✓ Connected to $(get_server_name $SELECTED_SERVER)${NC}" >&2
+                    clear
+                    draw_header
+                    echo ""
+                    echo -e "${GREEN}🔄 Switched to $(get_server_name $SELECTED_SERVER) server${NC}"
+                fi
+                ;;
+            "quit"|"exit"|"q"|":q"|":quit")
+                echo ""
+                echo -e "${GREEN}👋 Thanks for chatting! Goodbye!${NC}"
+                exit 0
+                ;;
+            "clear"|"cls")
+                clear
+                draw_header
+                echo ""
+                echo -e "${DIM}💬 Chat cleared - Continue the conversation${NC}"
+                ;;
+            *)
+                query_llm "$question"
+                ;;
+        esac
+    done
+}
+
+# Trap Ctrl+C
+trap 'echo -e "\n${GREEN}👋 Goodbye!${NC}"; exit 0' INT
+
+# Run main function
+main "$@"
