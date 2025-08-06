@@ -9,7 +9,7 @@
 # Format: "Name|Host|Port"
 SERVERS=(
     "ch.at|ch.at|53"
-    "LLM Pieter|llm.pieter.com|9000"
+    "LLM Pieter|llm.pieter.com|53"
     "Local|localhost|5354"
     # Add more servers here like:
     # "OpenAI Proxy|proxy.example.com|1234"
