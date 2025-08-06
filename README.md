@@ -174,15 +174,3 @@ If your question is too long:
 ## License
 
 This project is open source. Please check the repository for license details.
-
-## Related Tools
-
-This script is part of a larger LLM DNS toolkit. Check out the other tools:
-- `ask` - Simple command-line queries
-- `chat` - Basic chat interface
-- `console` - Advanced console with history
-- `llm_dns_server.py` - Local LLM DNS server
-
----
-
-*Made with ❤️ for the LLM DNS community*
